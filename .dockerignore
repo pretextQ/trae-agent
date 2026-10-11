@@ -1,0 +1,12 @@
+# 私有凭据与本地状态绝不进入镜像构建上下文
+.env
+.git/
+.gitignore
+.venv/
+state/
+docs/
+__pycache__/
+*.py[cod]
+Dockerfile
+compose.yaml
+.dockerignore

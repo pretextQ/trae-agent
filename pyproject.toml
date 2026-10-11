@@ -1,0 +1,31 @@
+[project]
+name = "trae-agent"
+version = "0.1.0"
+description = "Independent real-task coding Agent for Eyes, running MiMo-V2.6-Flash with a bounded model/tool loop"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
+    "uvicorn>=0.37,<1",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.13,<1"]
+
+[project.scripts]
+trae-agent-serve = "trae_agent.serve:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trae_agent"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

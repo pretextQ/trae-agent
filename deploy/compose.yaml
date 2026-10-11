@@ -1,0 +1,28 @@
+# trae-agent standalone deployment. Run from the repository root:
+#   docker compose --env-file .env -f deploy/compose.yaml up -d --build
+#
+# Required entries in .env: AGENT_HTTP_TOKEN, AGENT_MODEL_API_KEY,
+# AGENT_RUN_BUDGET_RMB, AGENT_VERSION, AGENT_EYES_BASELINE, EYES_REPO.
+services:
+  trae-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: trae-agent:local
+    restart: "no"
+    ports:
+      - "19070:19070"
+    env_file:
+      - ../.env
+    environment:
+      AGENT_STATE_DIR: /data/state
+      AGENT_HTTP_HOST: 0.0.0.0
+      AGENT_HTTP_PORT: "19070"
+      # Eyes reference shell + contracts, pinned by AGENT_EYES_BASELINE; read-only.
+      PYTHONPATH: /opt/eyes/src
+    volumes:
+      - ${EYES_REPO:?EYES_REPO must point at the pinned Eyes checkout}:/opt/eyes:ro
+      - trae_agent_state:/data/state
+
+volumes:
+  trae_agent_state:
