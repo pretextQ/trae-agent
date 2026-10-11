@@ -1,0 +1,26 @@
+# 私有凭据与环境配置 —— 不进入仓库
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# 运行状态与产物
+state/
+artifacts/
+*.log
+*.sqlite
+*.sqlite3
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
