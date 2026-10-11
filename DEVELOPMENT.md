@@ -12,7 +12,7 @@ Windows/PowerShell 开发，Python >=3.14；运行在 Docker Desktop Linux 容�
 
 参考服务依赖 POSIX 文件锁，不承诺原生 Windows 运行。每个存储文件只允许一个 HTTP 服务进程，Uvicorn workers=1；协议状态使用独立 SQLite，不连接 Eyes PostgreSQL。不要重写现有 HTTP 去重/快照层或引入消息中间件。
 
-建议目录是后续实施方案，下面文件目前尚不存在：
+建议目录已按此实施(2026-10-11,见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md));`src/trae_agent/` 六个模块、`deploy/` 与脚本均已存在并通过静态检查与真实验证:
 
 ```text
 src/trae_agent/
@@ -29,6 +29,7 @@ deploy/
 docs/                   实施和实际验证记录
 pyproject.toml
 uv.lock
+scripts/                协议客户端与原评分器复用入口(操作工具,非测试)
 ```
 
 独立锁定新项目依赖，固定 Eyes 依赖版本/源码基线。不要让安装新模型 SDK 覆盖 Eyes 已冻结依赖；组合环境必须做依赖一致性检查。别把未来计划目录宣称为已实现。

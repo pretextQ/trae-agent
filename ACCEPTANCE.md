@@ -1,6 +1,8 @@
 # 接入 Eyes 与双 Agent 验收清单
 
-本页是计划，不是已完成记录。源代码/协议以 Eyes 当前 HEAD 为准；文档编写时基线为 `67d2195`。新 Agent 默认运行模型为 `mimo-v2.6-flash`，ZCode 开发模型保持 GLM-5.3-Flash；模型请求产生费用前先落实独立 MiMo 预算及凭据。
+本页是计划,不是已完成记录。源代码/协议以 Eyes 当前 HEAD 为准;文档编写时基线为 `67d2195`。新 Agent 默认运行模型为 `mimo-v2.6-flash`,ZCode 开发模型保持 GLM-5.3-Flash;模型请求产生费用前先落实独立 MiMo 预算及凭据。
+
+状态(2026-10-11):第 1 节三任务已由 trae-agent 真实执行并通过原评分器 4/4(见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md));第 2 节起的 Eyes 控制面发布、Runner 签发、双 Agent 并发、失败隔离与 Runner 恢复验收**尚未执行**,仍以本清单为准。服务侧已实测:幂等重放零新调用、同键/同 attempt 冲突 409、错凭据 401、产物 SHA-256 一致、重启后未完成转 unknown 且不重跑、unknown 占额返回 429。
 
 ## 1. 固定任务与评分
 

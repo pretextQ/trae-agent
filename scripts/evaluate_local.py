@@ -55,17 +55,17 @@ def main() -> None:
         raise SystemExit(f"case {args.case!r} not found")
 
     artifact_files = sorted(p for p in args.artifacts.iterdir() if p.is_file())
-    evidence = {
-        "artifacts": [
+    evidence = SimpleNamespace(
+        artifacts=[
             {
                 "id": f"local-{index}",
                 "metadata_content": {"name": path.name},
             }
             for index, path in enumerate(artifact_files)
         ],
-        "events": [],
-        "references": [],
-    }
+        events=[],
+        references=[],
+    )
     artifact_bytes = {
         f"local-{index}": path.read_bytes() for index, path in enumerate(artifact_files)
     }
