@@ -5,6 +5,9 @@ description = "Independent real-task coding Agent for Eyes, running MiMo-V2.6-Fl
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    # fastapi backs the Eyes reference protocol shell (eyes.agent_service.http);
+    # the range matches Eyes' own pin so the combined env stays consistent.
+    "fastapi>=0.118.3,<1",
     "httpx>=0.28,<1",
     "pydantic>=2.12,<3",
     "uvicorn>=0.37,<1",
