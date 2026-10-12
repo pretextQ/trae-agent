@@ -2,7 +2,9 @@
 
 日期:2026-10-11。项目目录:`D:\woker\trae`。Eyes 对照基线:`67d2195`,仓库:`D:\projects\eyes`。
 
-**当前状态**:Agent 已实现并完成本机真实验证——三任务原样执行全部 `succeeded`,Eyes 原评分器独立评分 4/4 全部 pass,费用 ¥0.0215(预算 ¥1)。实际数字、命令与剩余门槛见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)。Eyes 控制面接入(目标发布/Runner/双 Agent 并发)未开始。
+**2026-10-11 历史状态**:Agent 已实现并完成本机真实验证——三任务原样执行全部 `succeeded`,Eyes 原评分器独立评分 4/4 全部 pass,费用 ¥0.0215(预算 ¥1)。该轮实际数字见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)；当时 Eyes 控制面接入未开始。
+
+2026-10-12 最新状态：主动 HTTP 目标发布、原三任务闭环、与 MewCode 的真实重叠执行及定向恢复已完成；接入未确认请求缺陷修正 `357d2ec`。上段保留为 10-11 历史结论。实际范围、费用、失败和 M1/M2 剩余条件见 [Eyes 接入/验收说明](docs/EYES_ACCEPTANCE.md)，不宣布全部里程碑通过。
 
 trae-agent 是独立于 MewCode 的真实任务执行 Agent:自己的模型循环、工具执行、任务状态和产物,接入 Eyes 统一 Agent 协议 v1。运行时默认调用 MiMo-V2.6-Flash(全小写 `mimo-v2.6-flash`);ZCode + GLM-5.3-Flash 仅是开发工具,不参与运行时。
 
