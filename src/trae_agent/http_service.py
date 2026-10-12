@@ -111,16 +111,24 @@ def app():
                 task.deadline,
             )
         finally:
-            # The loop is in-process and synchronous; killing stragglers here is what
-            # makes stopped_confirmed honest for every terminal outcome below.
+            # End local tools, but a lost model response does not prove that the
+            # vendor operation stopped. Its durable reservation is checked below.
             runtime.kill_all()
+
+        budget_snapshot = ledger.snapshot()
+        model_stop_confirmed = not (
+            budget_snapshot["reserved_rmb"] or budget_snapshot["unconfirmed_usage_calls"]
+        )
+        if not model_stop_confirmed:
+            capture.event(
+                "task.stop_unconfirmed",
+                {"reason": "model request or spend remains unconfirmed"},
+            )
 
         artifacts = []
         manifest = []
         for name, data in workspace.collect_artifacts():
-            manifest.append(
-                {"name": name, "size_bytes": len(data), "sha256": sha256_hex(data)}
-            )
+            manifest.append({"name": name, "size_bytes": len(data), "sha256": sha256_hex(data)})
             media_type = MEDIA_TYPES.get(Path(name).suffix, "text/plain; charset=utf-8")
             published = capture.artifact(name, data, media_type)
             if published is not None:
@@ -134,7 +142,8 @@ def app():
                     "published": published is not None,
                 },
             )
-        cleanup_ok = workspace.cleanup()
+        # Preserve the original workspace for investigation of unknown work.
+        cleanup_ok = workspace.cleanup() if model_stop_confirmed else None
 
         cost = {
             "model_calls": runtime.model_calls,
@@ -149,12 +158,12 @@ def app():
             "files": manifest,
             "usage": cost,
         }
-        status = outcome.status
+        status = outcome.status if model_stop_confirmed else "unknown"
         error = None
         if status != "succeeded":
             error = {
-                "code": outcome.error_code or "agent_failed",
-                "message": (outcome.error_message or "Agent loop ended without completion")[
+                "code": outcome.error_code or "model_stop_unconfirmed",
+                "message": (outcome.error_message or "Model operation stop is unconfirmed")[
                     :MAX_ERROR_MESSAGE
                 ],
             }
@@ -164,11 +173,17 @@ def app():
             "status": status,
             "output": output,
             "error": error,
-            "stopped_confirmed": True,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "cleanup_status": "succeeded" if cleanup_ok else "failed",
+            "stopped_confirmed": model_stop_confirmed,
+            "completed_at": datetime.now(UTC).isoformat() if model_stop_confirmed else None,
+            "cleanup_status": "unknown"
+            if cleanup_ok is None
+            else "succeeded"
+            if cleanup_ok
+            else "failed",
             "evidence": {
-                "status": "sealed" if capture.capture_failures == 0 else "partial",
+                "status": "sealed"
+                if capture.capture_failures == 0 and model_stop_confirmed
+                else "partial",
                 "dropped_events": 0,
                 "details": {
                     "capture_failures": capture.capture_failures,
@@ -176,6 +191,8 @@ def app():
                     "agent_version": agent_version,
                     "capture_started_at": started.isoformat(),
                     "usage": cost,
+                    "model_stop_confirmed": model_stop_confirmed,
+                    "budget_reservation_rmb": budget_snapshot["reserved_rmb"],
                 },
             },
             "artifacts": [

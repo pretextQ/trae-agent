@@ -95,3 +95,11 @@ capabilities(200,`agent_id=trae-agent`、并发 1、无取消/资源、事件/�
 ## 2026-10-12：直接任务与被动观测
 
 新增 `observe.py` 直接任务入口和 `observation.py` 有界持久 exporter；扩充原循环的可选正文/错误埋点，不重建模型/工具循环。两次真实任务 succeeded，API 暂停保留 51 批、恢复补传归零，累计 ¥0.009092；实现/检查/真实证据与未覆盖项见 [接入说明](OBSERVATION.md)。主动 HTTP events 和被动 exporter 严格区分，双 Agent 并发本轮未执行。
+
+## 2026-10-12：HTTP 未确认模型请求修正
+
+双 Agent 验收的独立断网容器实际调用原 CodingInput/AgentLoop/ModelClient，不能连接供应商、未产生模型费用。旧接入把 `model_network_error` 返回为 failed、stopped_confirmed=true，而账本已有未确认预留；本地循环退出不能证明远端停止。这是实际复现的接入缺陷，不是业务质量差异。
+
+HTTP 接入现检查持久账本：pending reservation 或 unconfirmed usage 存在时，结果 unknown、stopped_confirmed=false、completed_at=null、证据 partial；保留工作目录，清理状态 unknown。原错误和产物保留，不改业务循环、测试集或评分器。已确认无预留的正常结果及调用前预算拒绝仍按原真实结果返回。
+
+修正后断网容器原键查询/重放返回同一 unknown run，重启后映射保持且新提交 429；账本 calls=0、预留保留，未重跑或释放容量。Ruff check/format、字节编译及 diff 检查通过。工具进程清理仍是 best-effort，不将这一修正扩大为任意恶意子进程或取消停止确认验收。私有证据在 Eyes `data/dual-agent-20261012/fault-*-responses.json`、重启查询和账本，未提交。
