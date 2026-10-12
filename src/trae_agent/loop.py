@@ -104,6 +104,15 @@ class AgentLoop:
                 f"Model call limit {self.config.max_model_calls} reached",
             )
 
+        if self.config.capture_model_io:
+            self.emit(
+                "model.input",
+                {
+                    "messages": [
+                        {k: v for k, v in m.items() if k != "reasoning_content"} for m in messages
+                    ]
+                },
+            )
         self.emit(
             "model.request",
             {
@@ -116,11 +125,12 @@ class AgentLoop:
         try:
             response = self.client.complete(
                 messages,
-                timeout_seconds=max(MIN_REQUEST_SECONDS, min(
-                    self.config.request_timeout_seconds, remaining - 1.0
-                )),
+                timeout_seconds=max(
+                    MIN_REQUEST_SECONDS, min(self.config.request_timeout_seconds, remaining - 1.0)
+                ),
             )
         except ModelError as error:
+            self.emit("model.error", {"call_index": call_index, "code": error.code})
             return LoopOutcome(
                 status="failed",
                 error_code=error.code,
@@ -140,7 +150,7 @@ class AgentLoop:
             "cost_rmb": round(response.cost_rmb, 6),
         }
         if self.config.capture_model_io:
-            response_data["content_preview"] = _content_text(response.message.get("content"))[:1000]
+            response_data["content"] = _content_text(response.message.get("content"))
         self.emit("model.response", response_data)
 
         if response.tool_calls:
@@ -169,6 +179,7 @@ class AgentLoop:
                     "name": name,
                     "arguments_bytes": len(arguments) if arguments is not None else 0,
                     "batch_index": index,
+                    **({"arguments": arguments} if self.config.capture_model_io else {}),
                 },
             )
             if parse_error is not None:
@@ -182,6 +193,7 @@ class AgentLoop:
                     "name": name,
                     "ok": _result_ok(result),
                     "result_bytes": len(result),
+                    **({"result": result} if self.config.capture_model_io else {}),
                 },
             )
             messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
@@ -190,9 +202,7 @@ class AgentLoop:
     def _execute_tool(self, name: str, arguments: dict) -> str:
         tool = TOOLS.get(name)
         if tool is None:
-            return json.dumps(
-                {"ok": False, "error": f"unknown tool: {name}"}, ensure_ascii=False
-            )
+            return json.dumps({"ok": False, "error": f"unknown tool: {name}"}, ensure_ascii=False)
         try:
             return tool(self.workspace, self.runtime, arguments)
         except (ToolError, WorkspaceError) as error:
@@ -263,9 +273,7 @@ def _content_text(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
-        )
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
     return ""
 
 

@@ -6,6 +6,10 @@
 
 trae-agent 是独立于 MewCode 的真实任务执行 Agent:自己的模型循环、工具执行、任务状态和产物,接入 Eyes 统一 Agent 协议 v1。运行时默认调用 MiMo-V2.6-Flash(全小写 `mimo-v2.6-flash`);ZCode + GLM-5.3-Flash 仅是开发工具,不参与运行时。
 
+## 直接使用与被动观测
+
+已有 AgentLoop 可通过 `python -m trae_agent.observe` 直接执行用户任务；可选 exporter 使用 ObservationBatch/Event 上报 Eyes，无需实验、测试集、评分器或 Runner。当前运行在 Docker Linux，配置、真实接入及补传边界见 [被动观测说明](docs/OBSERVATION.md)。原 HTTP 接入不自动启用该 exporter。
+
 ## 快速开始
 
 ```sh
