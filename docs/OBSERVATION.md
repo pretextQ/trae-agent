@@ -57,3 +57,6 @@ docker run --init --rm --env-file .env --env-file .env.observation `
 同项目另一来源的真实额度拒绝任务：calls=0、费用=0，limited/8 事件；它的一次本地模型尝试不代表供应商请求。40 个具名权限/去重/冲突请求与预期一致，当前项目 read 可读取多个来源，来源令牌只写本来源、不读项目。不修改该读取语义。
 
 Ruff/format、字节编译通过；未新增/修改测试、用例、fixtures 或 mocks。原始正文/日志/账本留在 Eyes 忽略目录 `data/observation-trae-20261012/`。容量耗尽、强杀 exporter、慢盘、真实供应商 usage 缺失及全部网络故障组合未注入，不宣称完整故障矩阵或长期运行。最终页面/退出/重启核对见 Eyes 的 `docs/observation-trae-acceptance-20261012.md`。
+
+
+收尾复核：正常停止/启动 Eyes PG/API/Web 后，3 run/100 事件的完整 API JSON 一致；纯补传再次启动不增加模型调用，预算账本、任务结果和 workspace 字节不变，pending/rejected=0。所有本轮容器已退出；成功任务/补传退出 0，调用前 budget_exhausted 的真实任务退出 1（limited 终态，零费用），不隐去该失败。原 100 个容器身份/状态/挂载未变，现场保留。
