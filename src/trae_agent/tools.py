@@ -169,7 +169,7 @@ def _kill_process_group(process) -> None:
 
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    except ProcessLookupError, PermissionError, OSError:
         try:
             process.kill()
         except OSError:
