@@ -81,3 +81,12 @@ capabilities(200,`agent_id=trae-agent`、并发 1、无取消/资源、事件/�
 3. 签发限定该目标的 Runner 凭据(独立于 MewCode 与管理凭据),Runner TOML:`allowed_http_origins=["http://127.0.0.1:19070"]`、`secret_env_allowlist=["AGENT_HTTP_TOKEN"]`、`execution_slots=1`、`score_slots=1`;Runner 安装环境须升级到与控制端相同版本。
 4. 导入既有 JSONL、发布既有评分器、创建独立项目/实验(不覆盖旧验证环境),MewCode 1 槽 + 本 Agent 1 槽同时运行,以真实执行区间证明双 Agent 并发。
 5. 按 ACCEPTANCE.md 补齐:失败隔离、Runner 退出恢复、额度/队列、双 Agent 结果分别呈现; unknown 运行需按平台核对路径处理(参考外壳提供进程内 `app.state.resolve_run`,无 HTTP 修改入口)。
+
+
+## 2026-10-12：调用前预算缺口修正
+
+原 `ensure_can_spend` 只检查历史金额，不能保证下一请求落在剩余额度内；传输重试也不能证明供应商未执行。保留上面的历史运行与费用，不将旧文字解释为已有请求前预留。
+
+当前 ModelClient 在发送前先原子持久化保守文本请求预留，限制序列化请求 128000 字节，以每 UTF-8 字节 4 token 加 4096 framing token、完整 max_completion_tokens 输出上限和配置价格计算。此文本边界是保守工程估算，依赖供应商遵守输出上限/计价，不冒充供应商金额硬限额。预算包含已花金额与预留；超额拒绝发请求。未确认请求/usage、损坏账本均拒绝后续调用，网络异常不自动重试；重启不会释放未确认预留。已确认 usage 才替换预留为实际费用。当前仅支持已配置文本/本地工具，不含图片、音视频或供应商收费工具。
+
+2026-10-12 官方[计价页](https://mimo.mi.com/docs/pricing)仍列标准 Flash 输入 ¥1/M、输出 ¥2/M，保守使用标准价，不依赖时段优惠。本轮新预算用户明确为 ¥1。静态 Ruff/format 和字节编译通过；截至此修正提交尚未发模型请求，真实运行另记。不修改仓库测试、用例或评分器。

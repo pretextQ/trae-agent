@@ -20,7 +20,7 @@ import httpx
 from trae_agent.config import Config
 
 MAX_ERROR_BODY = 2000
-TRANSPORT_RETRIES = 2
+MAX_REQUEST_BYTES = 128_000
 
 
 class ModelError(Exception):
@@ -81,8 +81,12 @@ class BudgetLedger:
                 unconfirmed_usage_calls=int(data.get("unconfirmed_usage_calls", 0)),
                 extra=dict(data.get("extra", {})),
             )
-        except (OSError, ValueError):
+        except FileNotFoundError:
             self.state = LedgerState()
+        except (OSError, ValueError, TypeError) as error:
+            raise ModelError(
+                "ledger_unreadable", "Refusing paid calls with unreadable ledger"
+            ) from error
 
     def _persist_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -105,12 +109,32 @@ class BudgetLedger:
         )
         os.replace(tmp, self.path)
 
-    def ensure_can_spend(self) -> None:
+    def reserve(self, payload: dict) -> None:
+        """Persist a conservative text-only request allowance before sending.
+
+        Four tokens per serialized UTF-8 byte plus 4096 framing tokens deliberately
+        overcounts ordinary text. No media/server tools are admitted by this client.
+        Output uses the requested completion cap, including reasoning. The vendor
+        must honor that cap and the configured prices for this allowance to apply.
+        """
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise ModelError("request_size_limit", "Model request exceeds text-only byte bound")
+        allowance = (
+            (4 * len(encoded) + 4096) * self.config.price_input_per_m
+            + self.config.max_output_tokens * self.config.price_output_per_m
+        ) / 1_000_000
         with self._lock:
             if self.config.run_budget_rmb is None:
                 raise ModelError("budget_unconfigured", "AGENT_RUN_BUDGET_RMB is not set")
-            if self.state.spent_rmb >= self.config.run_budget_rmb:
-                raise BudgetExhausted(self.state.spent_rmb, self.config.run_budget_rmb)
+            if self.state.unconfirmed_usage_calls or self.state.extra.get("pending_rmb"):
+                raise ModelError(
+                    "spend_unconfirmed", "Previous model request has unconfirmed spend"
+                )
+            if self.state.spent_rmb + allowance > self.config.run_budget_rmb:
+                raise BudgetExhausted(self.state.spent_rmb + allowance, self.config.run_budget_rmb)
+            self.state.extra["pending_rmb"] = allowance
+            self._persist_locked()
 
     def record(self, usage: dict | None) -> float:
         """Add one call's usage; returns the incremental cost in RMB."""
@@ -121,7 +145,14 @@ class BudgetLedger:
                 self.state.unconfirmed_usage_calls += 1
                 self._persist_locked()
                 return 0.0
-            prompt = int(usage.get("prompt_tokens") or 0)
+            if any(
+                type(usage.get(k)) is not int or usage[k] < 0
+                for k in ("prompt_tokens", "completion_tokens")
+            ):
+                self.state.unconfirmed_usage_calls += 1
+                self._persist_locked()
+                raise ModelError("usage_invalid", "Vendor token usage is missing or invalid")
+            prompt = int(usage["prompt_tokens"])
             completion = int(usage.get("completion_tokens") or 0)
             details = usage.get("prompt_tokens_details") or {}
             cached = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
@@ -131,6 +162,10 @@ class BudgetLedger:
                 + cached / 1_000_000 * self.config.price_cache_read_per_m
                 + completion / 1_000_000 * self.config.price_output_per_m
             )
+            reserved = self.state.extra.get("pending_rmb", 0.0)
+            self.state.extra["pending_rmb"] = 0.0
+            if cost > reserved:
+                self.state.unconfirmed_usage_calls += 1
             self.state.spent_rmb += cost
             self.state.prompt_tokens += prompt
             self.state.cached_tokens += cached
@@ -147,6 +182,7 @@ class BudgetLedger:
                 "cached_tokens": self.state.cached_tokens,
                 "completion_tokens": self.state.completion_tokens,
                 "unconfirmed_usage_calls": self.state.unconfirmed_usage_calls,
+                "reserved_rmb": self.state.extra.get("pending_rmb", 0.0),
             }
 
 
@@ -158,7 +194,6 @@ class ModelClient:
 
     def complete(self, messages: list[dict], timeout_seconds: float) -> ModelResponse:
         api_key = self.config.require_model_access()
-        self.ledger.ensure_can_spend()
         payload = {
             "model": self.config.model_id,
             "messages": messages,
@@ -167,6 +202,7 @@ class ModelClient:
             "thinking": {"type": self.config.thinking},
             "stream": False,
         }
+        self.ledger.reserve(payload)
         headers = {"Authorization": f"Bearer {api_key}"}
         started = time.monotonic()
         data = self._post(payload, headers, timeout_seconds)
@@ -200,21 +236,13 @@ class ModelClient:
 
     def _post(self, payload: dict, headers: dict, timeout_seconds: float) -> dict:
         url = f"{self.config.base_url}/chat/completions"
-        delays = [1.0, 2.0]
-        last_error: Exception | None = None
-        for attempt in range(TRANSPORT_RETRIES + 1):
-            try:
-                with httpx.Client(timeout=timeout_seconds) as client:
-                    response = client.post(url, json=payload, headers=headers)
-                break
-            except httpx.TransportError as error:
-                # No bytes consumed on the vendor side for a failed transport; retrying
-                # does not double-charge. Anything after a response is never retried.
-                last_error = error
-                if attempt < TRANSPORT_RETRIES:
-                    time.sleep(delays[min(attempt, len(delays) - 1)])
-        else:
-            raise ModelError("model_network_error", str(last_error))
+        try:
+            with httpx.Client(timeout=timeout_seconds, trust_env=False) as client:
+                response = client.post(url, json=payload, headers=headers)
+        except httpx.TransportError as error:
+            # A timeout/disconnect may follow a billed request. Keep the durable
+            # reservation and stop; never resend a model request as telemetry retry.
+            raise ModelError("model_network_error", type(error).__name__) from None
         if response.status_code == 429:
             raise ModelError(
                 "model_rate_limited", "Model API returned 429; not retrying paid calls"
@@ -225,9 +253,7 @@ class ModelClient:
             )
         if response.status_code >= 400:
             body = response.text[:MAX_ERROR_BODY]
-            raise ModelError(
-                "model_http_error", f"Model API HTTP {response.status_code}: {body}"
-            )
+            raise ModelError("model_http_error", f"Model API HTTP {response.status_code}: {body}")
         try:
             return response.json()
         except ValueError as error:
