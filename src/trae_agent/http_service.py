@@ -9,6 +9,7 @@ POSIX (the shell uses process file locks) - deploy with deploy/compose.yaml.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -99,7 +100,16 @@ def app():
         workspace = Workspace.create(config.state_dir, str(task.attempt_id))
         runtime = RunRuntime(config.tool_timeout_seconds)
         capture = RunCapture(shell, (config.api_key or "",))
-        client = ModelClient(config, ledger, TOOL_SCHEMAS)
+        client = ModelClient(
+            config,
+            ledger,
+            TOOL_SCHEMAS,
+            identity={
+                "run_id": str(shell.run_id),
+                "attempt_id": str(task.attempt_id),
+                "idempotency_key_sha256": hashlib.sha256(task.idempotency_key.encode()).hexdigest(),
+            },
+        )
         loop = AgentLoop(config, client, workspace, runtime, capture.event)
         started = datetime.now(UTC)
         try:
@@ -116,9 +126,7 @@ def app():
             runtime.kill_all()
 
         budget_snapshot = ledger.snapshot()
-        model_stop_confirmed = not (
-            budget_snapshot["reserved_rmb"] or budget_snapshot["unconfirmed_usage_calls"]
-        )
+        model_stop_confirmed = ledger.stop_confirmed(str(shell.run_id))
         if not model_stop_confirmed:
             capture.event(
                 "task.stop_unconfirmed",

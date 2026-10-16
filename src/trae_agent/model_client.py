@@ -1,41 +1,38 @@
-"""MiMo OpenAI-compatible chat client: non-streaming, bounded retries, shared budget ledger.
-
-Per DEVELOPMENT.md: first version is non-streaming; truncation, 429, network
-errors and missing usage are recorded, never papered over. When the vendor
-usage is missing, no further paid calls are made because spend cannot be
-confirmed. The ledger is process-global and persisted, so concurrent runs and
-service restarts share one budget account.
-"""
+"""Non-streaming chat client with request identities and bounded safe diagnostics."""
 
 from __future__ import annotations
 
-import json
-import os
-import threading
+import re
 import time
 from dataclasses import dataclass, field
 
 import httpx
 
+from trae_agent.budget import MAX_REQUEST_BYTES as MAX_REQUEST_BYTES
+from trae_agent.budget import BudgetLedger as BudgetLedger
 from trae_agent.config import Config
-
-MAX_ERROR_BODY = 2000
-MAX_REQUEST_BYTES = 128_000
-
-
-class ModelError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+from trae_agent.model_errors import BudgetExhausted as BudgetExhausted
+from trae_agent.model_errors import ModelError as ModelError
 
 
-class BudgetExhausted(ModelError):
-    def __init__(self, spent: float, budget: float) -> None:
-        super().__init__(
-            "budget_exhausted",
-            f"Run model budget reached: spent {spent:.4f} of {budget:.4f} RMB",
-        )
+def safe_id(value, secret):
+    secrets = (secret,) if isinstance(secret, str) else secret or ()
+    if (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", value)
+        and all(not item or item not in value for item in secrets)
+    ):
+        return value
+    return None
+
+
+def diagnostics(response, secret):
+    result = {"http_status": response.status_code}
+    for header in ("x-request-id", "request-id"):
+        value = safe_id(response.headers.get(header), secret)
+        if value:
+            result[header.replace("-", "_")] = value
+    return result
 
 
 @dataclass
@@ -46,153 +43,19 @@ class ModelResponse:
     tool_calls: list[dict]
     latency_ms: int
     cost_rmb: float = 0.0
-
-
-@dataclass
-class LedgerState:
-    spent_rmb: float = 0.0
-    calls: int = 0
-    prompt_tokens: int = 0
-    cached_tokens: int = 0
-    completion_tokens: int = 0
-    unconfirmed_usage_calls: int = 0
-    extra: dict = field(default_factory=dict)
-
-
-class BudgetLedger:
-    """Thread-safe cumulative model spend across all runs of this service process."""
-
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.path = config.state_dir / "budget_ledger.json"
-        self._lock = threading.Lock()
-        self.state = LedgerState()
-        self._load()
-
-    def _load(self) -> None:
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.state = LedgerState(
-                spent_rmb=float(data.get("spent_rmb", 0.0)),
-                calls=int(data.get("calls", 0)),
-                prompt_tokens=int(data.get("prompt_tokens", 0)),
-                cached_tokens=int(data.get("cached_tokens", 0)),
-                completion_tokens=int(data.get("completion_tokens", 0)),
-                unconfirmed_usage_calls=int(data.get("unconfirmed_usage_calls", 0)),
-                extra=dict(data.get("extra", {})),
-            )
-        except FileNotFoundError:
-            self.state = LedgerState()
-        except (OSError, ValueError, TypeError) as error:
-            raise ModelError(
-                "ledger_unreadable", "Refusing paid calls with unreadable ledger"
-            ) from error
-
-    def _persist_locked(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(
-                {
-                    "spent_rmb": self.state.spent_rmb,
-                    "calls": self.state.calls,
-                    "prompt_tokens": self.state.prompt_tokens,
-                    "cached_tokens": self.state.cached_tokens,
-                    "completion_tokens": self.state.completion_tokens,
-                    "unconfirmed_usage_calls": self.state.unconfirmed_usage_calls,
-                    "extra": self.state.extra,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(tmp, self.path)
-
-    def reserve(self, payload: dict) -> None:
-        """Persist a conservative text-only request allowance before sending.
-
-        Four tokens per serialized UTF-8 byte plus 4096 framing tokens deliberately
-        overcounts ordinary text. No media/server tools are admitted by this client.
-        Output uses the requested completion cap, including reasoning. The vendor
-        must honor that cap and the configured prices for this allowance to apply.
-        """
-        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        if len(encoded) > MAX_REQUEST_BYTES:
-            raise ModelError("request_size_limit", "Model request exceeds text-only byte bound")
-        allowance = (
-            (4 * len(encoded) + 4096) * self.config.price_input_per_m
-            + self.config.max_output_tokens * self.config.price_output_per_m
-        ) / 1_000_000
-        with self._lock:
-            if self.config.run_budget_rmb is None:
-                raise ModelError("budget_unconfigured", "AGENT_RUN_BUDGET_RMB is not set")
-            if self.state.unconfirmed_usage_calls or self.state.extra.get("pending_rmb"):
-                raise ModelError(
-                    "spend_unconfirmed", "Previous model request has unconfirmed spend"
-                )
-            if self.state.spent_rmb + allowance > self.config.run_budget_rmb:
-                raise BudgetExhausted(self.state.spent_rmb + allowance, self.config.run_budget_rmb)
-            self.state.extra["pending_rmb"] = allowance
-            self._persist_locked()
-
-    def record(self, usage: dict | None) -> float:
-        """Add one call's usage; returns the incremental cost in RMB."""
-        with self._lock:
-            self.state.calls += 1
-            if not isinstance(usage, dict):
-                # Spend cannot be confirmed; policy is to stop further paid calls.
-                self.state.unconfirmed_usage_calls += 1
-                self._persist_locked()
-                return 0.0
-            if any(
-                type(usage.get(k)) is not int or usage[k] < 0
-                for k in ("prompt_tokens", "completion_tokens")
-            ):
-                self.state.unconfirmed_usage_calls += 1
-                self._persist_locked()
-                raise ModelError("usage_invalid", "Vendor token usage is missing or invalid")
-            prompt = int(usage["prompt_tokens"])
-            completion = int(usage.get("completion_tokens") or 0)
-            details = usage.get("prompt_tokens_details") or {}
-            cached = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
-            uncached = max(0, prompt - cached)
-            cost = (
-                uncached / 1_000_000 * self.config.price_input_per_m
-                + cached / 1_000_000 * self.config.price_cache_read_per_m
-                + completion / 1_000_000 * self.config.price_output_per_m
-            )
-            reserved = self.state.extra.get("pending_rmb", 0.0)
-            self.state.extra["pending_rmb"] = 0.0
-            if cost > reserved:
-                self.state.unconfirmed_usage_calls += 1
-            self.state.spent_rmb += cost
-            self.state.prompt_tokens += prompt
-            self.state.cached_tokens += cached
-            self.state.completion_tokens += completion
-            self._persist_locked()
-            return cost
-
-    def snapshot(self) -> dict:
-        with self._lock:
-            return {
-                "spent_rmb": round(self.state.spent_rmb, 6),
-                "calls": self.state.calls,
-                "prompt_tokens": self.state.prompt_tokens,
-                "cached_tokens": self.state.cached_tokens,
-                "completion_tokens": self.state.completion_tokens,
-                "unconfirmed_usage_calls": self.state.unconfirmed_usage_calls,
-                "reserved_rmb": self.state.extra.get("pending_rmb", 0.0),
-            }
+    diagnostics: dict = field(default_factory=dict)
 
 
 class ModelClient:
-    def __init__(self, config: Config, ledger: BudgetLedger, tool_schemas: list[dict]) -> None:
-        self.config = config
-        self.ledger = ledger
-        self.tool_schemas = tool_schemas
+    def __init__(
+        self, config: Config, ledger: BudgetLedger, tool_schemas: list[dict], *, identity=None
+    ):
+        self.config, self.ledger, self.tool_schemas = config, ledger, tool_schemas
+        self.identity = identity or {}
 
-    def complete(self, messages: list[dict], timeout_seconds: float) -> ModelResponse:
+    def complete(
+        self, messages: list[dict], timeout_seconds: float, *, call_index=None
+    ) -> ModelResponse:
         api_key = self.config.require_model_access()
         payload = {
             "model": self.config.model_id,
@@ -202,61 +65,89 @@ class ModelClient:
             "thinking": {"type": self.config.thinking},
             "stream": False,
         }
-        self.ledger.reserve(payload)
-        headers = {"Authorization": f"Bearer {api_key}"}
-        started = time.monotonic()
-        data = self._post(payload, headers, timeout_seconds)
-        latency_ms = int((time.monotonic() - started) * 1000)
-
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ModelError("model_bad_response", "chat completion returned no choices")
-        choice = choices[0]
-        message = choice.get("message") or {}
-        finish_reason = choice.get("finish_reason")
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
-        cost = self.ledger.record(usage)
-        if usage is None:
-            raise ModelError(
-                "usage_missing",
-                "Vendor response had no usage object; spend cannot be confirmed, "
-                "stopping paid calls per budget policy",
+        call_id = self.ledger.reserve(payload, {**self.identity, "call_index": call_index}, api_key)
+        started, details = time.monotonic(), {"call_id": call_id}
+        try:
+            data, observed = self._post(
+                payload, {"Authorization": f"Bearer {api_key}"}, timeout_seconds
             )
+            details.update(observed)
+            self.ledger.observe(call_id, details)
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ModelError("model_bad_response", "Chat completion returned no choices")
+            choice = choices[0]
+            message, finish_reason = choice.get("message") or {}, choice.get("finish_reason")
+            if (
+                not isinstance(message, dict)
+                or not isinstance(finish_reason, str)
+                or finish_reason
+                not in {
+                    "stop",
+                    "length",
+                    "tool_calls",
+                    "content_filter",
+                    "repetition_truncation",
+                }
+            ):
+                raise ModelError(
+                    "model_bad_response", "Chat completion has no recognized completion"
+                )
+            self.ledger.observe(call_id, details, stopped=True)
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+            cost = self.ledger.record(usage, call_id)
+        except ModelError as error:
+            details.update(error.diagnostics)
+            self.ledger.observe(call_id, details)
+            raise ModelError(error.code, error.message, details) from None
         tool_calls = message.get("tool_calls") or []
-        if not isinstance(tool_calls, list):
-            tool_calls = []
         return ModelResponse(
             message=message,
             finish_reason=finish_reason,
             usage=usage,
-            tool_calls=[tc for tc in tool_calls if isinstance(tc, dict)],
-            latency_ms=latency_ms,
+            tool_calls=[tc for tc in tool_calls if isinstance(tc, dict)]
+            if isinstance(tool_calls, list)
+            else [],
+            latency_ms=int((time.monotonic() - started) * 1000),
             cost_rmb=cost,
+            diagnostics=details,
         )
 
-    def _post(self, payload: dict, headers: dict, timeout_seconds: float) -> dict:
-        url = f"{self.config.base_url}/chat/completions"
+    def _post(self, payload: dict, headers: dict, timeout_seconds: float):
         try:
             with httpx.Client(timeout=timeout_seconds, trust_env=False) as client:
-                response = client.post(url, json=payload, headers=headers)
+                response = client.post(
+                    f"{self.config.base_url}/chat/completions", json=payload, headers=headers
+                )
         except httpx.TransportError as error:
-            # A timeout/disconnect may follow a billed request. Keep the durable
-            # reservation and stop; never resend a model request as telemetry retry.
             raise ModelError("model_network_error", type(error).__name__) from None
-        if response.status_code == 429:
-            raise ModelError(
-                "model_rate_limited", "Model API returned 429; not retrying paid calls"
-            )
-        if response.status_code in {401, 403}:
-            raise ModelError(
-                "model_auth_error", f"Model API rejected credentials ({response.status_code})"
-            )
-        if response.status_code >= 400:
-            body = response.text[:MAX_ERROR_BODY]
-            raise ModelError("model_http_error", f"Model API HTTP {response.status_code}: {body}")
+        secrets = (self.config.api_key, self.config.http_token)
+        details = diagnostics(response, secrets)
         try:
-            return response.json()
-        except ValueError as error:
+            data = response.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            response_id = safe_id(data.get("id"), secrets)
+            if response_id:
+                details["response_id"] = response_id
+            error = data.get("error")
+            if isinstance(error, dict):
+                code = error.get("code")
+                code = str(code) if type(code) is int else code
+                if safe_id(code, secrets):
+                    details["provider_error_code"] = code
+        if response.status_code >= 400:
+            code = (
+                "model_rate_limited"
+                if response.status_code == 429
+                else "model_auth_error"
+                if response.status_code in {401, 403}
+                else "model_http_error"
+            )
             raise ModelError(
-                "model_bad_json", f"Model API returned non-JSON body: {error}"
-            ) from None
+                code, f"Model API HTTP {response.status_code}; outcome unconfirmed", details
+            )
+        if not isinstance(data, dict):
+            raise ModelError("model_bad_json", "Model API returned no JSON object", details)
+        return data, details

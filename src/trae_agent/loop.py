@@ -128,9 +128,12 @@ class AgentLoop:
                 timeout_seconds=max(
                     MIN_REQUEST_SECONDS, min(self.config.request_timeout_seconds, remaining - 1.0)
                 ),
+                call_index=call_index,
             )
         except ModelError as error:
-            self.emit("model.error", {"call_index": call_index, "code": error.code})
+            self.emit(
+                "model.error", {"call_index": call_index, "code": error.code, **error.diagnostics}
+            )
             return LoopOutcome(
                 status="failed",
                 error_code=error.code,
@@ -141,6 +144,7 @@ class AgentLoop:
         self.runtime.model_completion_tokens += int(usage.get("completion_tokens") or 0)
         self.runtime.cost_rmb += response.cost_rmb
         response_data = {
+            **response.diagnostics,
             "call_index": call_index,
             "finish_reason": response.finish_reason,
             "tool_call_count": len(response.tool_calls),

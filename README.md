@@ -36,4 +36,8 @@ uv run python scripts/submit_task.py --dataset D:\projects\eyes\integrations\det
 
 ## 约束(继续有效)
 
+2026-10-17：新增请求身份/安全诊断、v2账本与受权限/锁/证据约束的离线协调入口，
+停止与计费分别判断；见[协调说明与隔离验证](docs/RECOVERY.md)。原订单unknown及费用
+仍待供应商证明，本轮代码交付没有应用到历史环境，也没有新增模型调用。
+
 Eyes 原有架构、API、数据库和评分器不在本项目修改范围。24 小时持续运行不是当前要求;协议中的终态最短 86400 秒保留指磁盘记录生命周期。凭据仅存于被 `.gitignore` 排除的私有 `.env`;付费调用前必须配置 `AGENT_RUN_BUDGET_RMB`,无明确预算不发起任何模型调用。

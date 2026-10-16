@@ -98,7 +98,20 @@ def main():
         files = workspace.materialize_input(initial)
         ledger = BudgetLedger(config)
         loop = AgentLoop(
-            config, ModelClient(config, ledger, TOOL_SCHEMAS), workspace, runtime, emit
+            config,
+            ModelClient(
+                config,
+                ledger,
+                TOOL_SCHEMAS,
+                identity={
+                    "run_id": run_id,
+                    "attempt_id": None,
+                    "idempotency_key_sha256": None,
+                },
+            ),
+            workspace,
+            runtime,
+            emit,
         )
         outcome = loop.run(
             prompt, initial, files, datetime.now(UTC) + timedelta(seconds=args.deadline_seconds)
